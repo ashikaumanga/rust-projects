@@ -1,7 +1,7 @@
 use bevy::{color::palettes::css::{SILVER, WHITE}, pbr::wireframe::{Wireframe, WireframeConfig, WireframePlugin}, prelude::*, render::{mesh::{self, VertexAttributeValues}, settings::{RenderCreation, WgpuFeatures, WgpuSettings}, RenderPlugin}, utils::info};
 //use bevy_rts_camera::{RtsCamera, RtsCameraControls, RtsCameraPlugin}
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
-use noise::{BasicMulti, NoiseFn, Perlin, Seedable};
+use noise::{BasicMulti, NoiseFn, Perlin};
 
 #[derive(Component)]
 struct Shape;
@@ -12,8 +12,8 @@ struct Ship {
     orientation: Quat,
     forward_speed: f32,   // Speed along the forward direction
     pitch_input: f32,     // Pitch input
-    roll_input: f32,      // Roll input
     yaw_input: f32,       // Yaw input
+    bank : f32
 }
 
 #[derive(Component)]
@@ -23,10 +23,9 @@ struct FollowCamera;
 struct Terrain;
 
 use std::f32::consts::PI;
-const MAX_SPEED: f32 = 20.0;
-const ACCELERATION: f32 = 0.1;
+const MAX_SPEED: f32 = 10000.0;
+const ACCELERATION: f32 = 20.0;
 const PITCH_SPEED: f32 = 1.5;
-const ROLL_SPEED: f32 = 1.9;
 const YAW_SPEED: f32 = 1.25;
 const INPUT_RESPONSE: f32 = 8.0;
 
@@ -50,7 +49,7 @@ fn main() {
     })
     .add_plugins(PanOrbitCameraPlugin)
     .add_systems(Startup, (setup_scene,setup_ship))
-    .add_systems(Update, (update_cube,input_controls_ship,update_ship_physics,sync_ship_transform,toggle_wireframe,camera_follow) )
+    .add_systems(Update, (input_controls_ship,update_cube,update_ship_physics,sync_ship_mesh_transform,toggle_wireframe,update_camera_follow) )
     .run();
 }
 
@@ -60,13 +59,14 @@ fn update_cube(mut query: Query<&mut Transform, With<Shape>>, time: Res<Time>) {
     }
 }
 
-fn sync_ship_transform(mut query: Query<(&Ship, &mut Transform)>) {
-    let rotation_fix = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2*2.0);
-
+fn sync_ship_mesh_transform(mut query: Query<(&Ship, &mut Transform)>) {
+    let mesh_rotation_fix_y = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2*2.0);
+    
     for (ship, mut transform) in query.iter_mut() {
+        let banking_rotation_z = Quat::from_rotation_z(ship.bank);
         transform.translation = ship.location;  
-        transform.rotation =     ship.orientation * rotation_fix;
-        //transform.rotate_y(std::f32::consts::FRAC_PI_2*2.0);
+        transform.rotation =    ship.orientation * banking_rotation_z*mesh_rotation_fix_y;
+
     }
 }
 
@@ -75,7 +75,6 @@ fn toggle_wireframe(mut commands: Commands,
                     langscapes: Query<Entity,(With<Terrain>,Without<Wireframe>)>,
                     input: Res<ButtonInput<KeyCode>>,) {
                         if input.just_pressed(KeyCode::Space) {
-                            info!("Space pressed");
                             for terrain in &langscapes {
                                 info!("Adding wireframe");
                                 commands.entity(terrain).insert(Wireframe);
@@ -93,12 +92,10 @@ fn update_ship_physics(
 
 ) {
     let delta = time.delta_secs();
-
     for mut ship in query.iter_mut() {
-        let rotation_fix = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2*2.0);
-        // Update orientation based on pitch, roll, and yaw inputs
-        let rotation = Quat::from_rotation_z(ship.roll_input * ROLL_SPEED * delta)
-            * Quat::from_rotation_x(ship.pitch_input * PITCH_SPEED * delta)
+        // Update orientation based on pitch, yaw inputs
+        let rotation = //Quat::from_rotation_z(ship.roll_input * ROLL_SPEED * delta)
+              Quat::from_rotation_x(ship.pitch_input * PITCH_SPEED * delta)
             * Quat::from_rotation_y(ship.yaw_input * YAW_SPEED * delta);
 
         ship.orientation = (ship.orientation * rotation).normalize();
@@ -112,39 +109,38 @@ fn update_ship_physics(
 }
 
 
-
 fn input_controls_ship(mut query: Query<&mut Ship>, time: Res<Time>, input: Res<ButtonInput<KeyCode>>) {
     let delta = time.delta_secs();
    
     for mut ship in query.iter_mut() {
         if input.pressed(KeyCode::KeyW) {
-            ship.forward_speed = (ship.forward_speed + ACCELERATION * time.delta_secs()).max(MAX_SPEED);
+            ship.forward_speed = (ship.forward_speed + ACCELERATION * time.delta_secs()).min(MAX_SPEED);
         }
         if input.pressed(KeyCode::KeyS) {
-            ship.forward_speed = (ship.forward_speed - ACCELERATION * time.delta_secs()).min(0.0);
+            ship.forward_speed = (ship.forward_speed - ACCELERATION * time.delta_secs()).max(0.0);
         }
 
-         // Smooth input interpolation for pitch, roll, and yaw
+         // Smooth input interpolation for pitch and yaw
          ship.pitch_input = lerp(
             ship.pitch_input,
             axis_input(&input, KeyCode::ArrowUp, KeyCode::ArrowDown),
             INPUT_RESPONSE * delta,
         );
-        /* 
-        ship.roll_input = lerp(
-            ship.roll_input,
-            axis_input(&input, KeyCode::ArrowRight, KeyCode::ArrowLeft),
-            INPUT_RESPONSE * delta,
-        );
-        */
-
+          
         ship.yaw_input = lerp(
             ship.yaw_input,
             axis_input(&input, KeyCode::ArrowRight, KeyCode::ArrowLeft),
             INPUT_RESPONSE * delta,
         );
     
-        //ship.roll_input = ship.yaw_input * 0.2;
+        //only used for Rendering the mesh
+       /* 
+        ship.bank = lerp(
+            ship.bank,
+            axis_input(&input, KeyCode::ArrowRight, KeyCode::ArrowLeft),
+            3.0 * delta,
+        );
+        */
     }
 }
 
@@ -160,8 +156,8 @@ fn setup_ship(mut commands: Commands, asset_server: Res<AssetServer>) {
         orientation: Quat::IDENTITY,
         forward_speed: 0.0,
             pitch_input: 0.0,
-            roll_input: 0.0,
             yaw_input: 0.0,
+            bank: 0.0
     }).insert(Transform::default())
     .insert(GlobalTransform::default())
     .insert(Name::new("Spaceship"))
@@ -203,7 +199,7 @@ fn setup_scene(mut commands: Commands,
     ));
 
 
-    // light
+    // lights
     // directional 'sun' light
      commands.spawn((
         DirectionalLight {
@@ -234,7 +230,7 @@ fn setup_scene(mut commands: Commands,
 }
 
 /// System to make the camera follow the ship
-fn camera_follow(
+fn update_camera_follow(
     query_ship: Query<&Ship>,
     mut query_camera: Query<&mut Transform, With<FollowCamera>>,
 ) {
@@ -245,8 +241,7 @@ fn camera_follow(
             let target_position = ship.location + (ship.orientation * -offset);
 
             // Smoothly move the camera to the target position
-            camera_transform.translation = target_position;
-
+            camera_transform.translation = camera_transform.translation.lerp(target_position, 0.3);
             // Make the camera look at the ship
             camera_transform.look_at(ship.location, Vec3::Y);
         }
@@ -262,10 +257,10 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
 fn axis_input(input: &Res<ButtonInput<KeyCode>>, negative: KeyCode, positive: KeyCode) -> f32 {
     let mut value = 0.0;
     if input.pressed(negative) {
-        value -= 1.0;
+        value = -std::f32::consts::FRAC_PI_2/2.0;
     }
     if input.pressed(positive) {
-        value += 1.0;
+        value = std::f32::consts::FRAC_PI_2/2.0;
     }
     value
 }
