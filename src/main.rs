@@ -24,7 +24,7 @@ struct Terrain;
 
 use std::f32::consts::PI;
 const MAX_SPEED: f32 = 10000.0;
-const ACCELERATION: f32 = 20.0;
+const ACCELERATION: f32 = 50.0;
 const PITCH_SPEED: f32 = 1.5;
 const YAW_SPEED: f32 = 1.25;
 const INPUT_RESPONSE: f32 = 8.0;
