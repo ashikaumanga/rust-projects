@@ -1,4 +1,4 @@
-use bevy::{color::palettes::css::{SILVER, WHITE}, pbr::wireframe::{Wireframe, WireframeConfig, WireframePlugin}, prelude::*, render::{mesh::{self, VertexAttributeValues}, settings::{RenderCreation, WgpuFeatures, WgpuSettings}, RenderPlugin}, utils::info};
+use bevy::{color::palettes::css::{SILVER, WHITE}, pbr::wireframe::{Wireframe, WireframeConfig, WireframePlugin}, prelude::*, render::{mesh::{self, VertexAttributeValues}, settings::{RenderCreation, WgpuFeatures, WgpuSettings}, RenderPlugin}, scene::ron::de, utils::info};
 //use bevy_rts_camera::{RtsCamera, RtsCameraControls, RtsCameraPlugin}
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use noise::{BasicMulti, NoiseFn, Perlin};
@@ -15,6 +15,17 @@ struct Ship {
     yaw_input: f32,       // Yaw input
     bank : f32
 }
+#[derive(Debug)]
+enum CameraMode {
+    FPV,
+    TPV
+}
+
+#[derive(Resource)]
+
+struct GameSettings {
+    camera_mode: CameraMode
+}
 
 #[derive(Component)]
 struct FollowCamera;
@@ -23,8 +34,8 @@ struct FollowCamera;
 struct Terrain;
 
 use std::f32::consts::PI;
-const MAX_SPEED: f32 = 10000.0;
-const ACCELERATION: f32 = 50.0;
+const MAX_SPEED: f32 = 1000.0;
+const ACCELERATION: f32 = 20.0;
 const PITCH_SPEED: f32 = 1.5;
 const YAW_SPEED: f32 = 1.25;
 const INPUT_RESPONSE: f32 = 8.0;
@@ -47,9 +58,12 @@ fn main() {
         global: false,
         default_color: WHITE.into(),
     })
+    .insert_resource(GameSettings {
+        camera_mode: CameraMode::TPV
+    })
     .add_plugins(PanOrbitCameraPlugin)
     .add_systems(Startup, (setup_scene,setup_ship))
-    .add_systems(Update, (input_controls_ship,update_cube,update_ship_physics,sync_ship_mesh_transform,toggle_wireframe,update_camera_follow) )
+    .add_systems(Update, (input_controls_ship,switch_camera_mode, update_cube,update_ship_physics,sync_ship_mesh_transform,toggle_wireframe,update_camera) )
     .run();
 }
 
@@ -59,13 +73,38 @@ fn update_cube(mut query: Query<&mut Transform, With<Shape>>, time: Res<Time>) {
     }
 }
 
+/* 
 fn sync_ship_mesh_transform(mut query: Query<(&Ship, &mut Transform)>) {
     let mesh_rotation_fix_y = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2*2.0);
     
     for (ship, mut transform) in query.iter_mut() {
         let banking_rotation_z = Quat::from_rotation_z(ship.bank);
-        transform.translation = ship.location;  
+
+        //transform.com
+       
         transform.rotation =    ship.orientation * banking_rotation_z*mesh_rotation_fix_y;
+        transform.translation = ship.location; 
+
+    }
+}*/
+fn sync_ship_mesh_transform(
+    mut query: Query<(&Ship, &mut Transform, &mut Visibility)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut game_settings: ResMut<GameSettings>) {
+    let mesh_rotation_fix_y = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2*2.0);
+    
+    for (ship, mut transform, mut visibility) in query.iter_mut() {
+        let banking_rotation_z = Quat::from_rotation_z(ship.bank);
+
+        //transform.com
+       
+        transform.rotation =    ship.orientation * banking_rotation_z*mesh_rotation_fix_y;
+        transform.translation = ship.location;
+
+        *visibility = match game_settings.camera_mode {
+            CameraMode::FPV => Visibility::Hidden,
+            CameraMode::TPV => Visibility::Visible,
+        };
 
     }
 }
@@ -86,7 +125,7 @@ fn toggle_wireframe(mut commands: Commands,
                         }
 }
 
-fn update_ship_physics(
+fn update_ship_physics2(
     time: Res<Time>,
     mut query: Query<&mut Ship>,
 
@@ -104,10 +143,41 @@ fn update_ship_physics(
         let forward = ship.orientation * Vec3::Z * -1.0; // Forward is negative Z
         
         let t = ship.forward_speed;
+        ship.location += forward *t * delta;
+    }
+}
+
+fn update_ship_physics(
+    time: Res<Time>,
+    mut query: Query<&mut Ship>,
+) {
+    let delta = time.delta_secs();
+    for mut ship in query.iter_mut() {
+        // Update orientation based on pitch, yaw inputs
+        let yaw_rotation = Quat::from_rotation_y(ship.yaw_input * YAW_SPEED * delta);
+        let pitch_rotation = Quat::from_rotation_x(ship.pitch_input * PITCH_SPEED * delta);
+        // Combine rotations: yaw around global Y axis, pitch around local X axis
+        ship.orientation = (yaw_rotation * ship.orientation * pitch_rotation).normalize();
+
+        // Update position based on forward direction and speed
+        let forward = ship.orientation * Vec3::Z * -1.0; // Forward is negative Z
+        let t = ship.forward_speed;
         ship.location += forward * t * delta;
     }
 }
 
+fn switch_camera_mode(
+    input: Res<ButtonInput<KeyCode>>,
+    mut game_settings: ResMut<GameSettings>,
+) {
+    if input.just_pressed(KeyCode::KeyV) {
+        match game_settings.camera_mode {
+            CameraMode::FPV => game_settings.camera_mode = CameraMode::TPV,
+            CameraMode::TPV => game_settings.camera_mode = CameraMode::FPV,
+        }
+        info!("Switched camera mode to {:?}", game_settings.camera_mode);
+    }
+}
 
 fn input_controls_ship(mut query: Query<&mut Ship>, time: Res<Time>, input: Res<ButtonInput<KeyCode>>) {
     let delta = time.delta_secs();
@@ -134,21 +204,27 @@ fn input_controls_ship(mut query: Query<&mut Ship>, time: Res<Time>, input: Res<
         );
     
         //only used for Rendering the mesh
-       /* 
+        
         ship.bank = lerp(
             ship.bank,
             axis_input(&input, KeyCode::ArrowRight, KeyCode::ArrowLeft),
             3.0 * delta,
         );
-        */
+        
     }
 }
 
-fn setup_ship(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup_ship(mut commands: Commands,
+    asset_server: Res<AssetServer>) {
     
     let assest = asset_server.load(
         GltfAssetLabel::Scene(0).from_asset("executioner.gltf")
         );
+
+     //let aroot =   SceneRoot(assest);
+     
+
+
         
     //commands.spawn(SceneRoot(assest)).insert(Ship);
     commands.spawn(Ship {
@@ -230,7 +306,53 @@ fn setup_scene(mut commands: Commands,
 }
 
 /// System to make the camera follow the ship
-fn update_camera_follow(
+fn update_camera(
+    query_ship: Query<&Ship>,
+    mut query_camera: Query<&mut Transform, With<FollowCamera>>,
+    game_settings: Res<GameSettings>
+) {
+    match game_settings.camera_mode {
+        CameraMode::FPV => update_camera_fpv(query_ship, query_camera),
+        CameraMode::TPV => update_camera_tpv(query_ship, query_camera),
+    }
+    /* 
+    if let Ok(ship) = query_ship.get_single() {
+        if let Ok(mut camera_transform) = query_camera.get_single_mut() {
+            // Camera offset behind and above the ship
+            let offset = Vec3::new(0.0, -5.0, -30.0);
+            let target_position = ship.location + (ship.orientation * -offset);
+
+            // Smoothly move the camera to the target position
+            camera_transform.translation = camera_transform.translation.lerp(target_position, 0.2);
+            // Make the camera look at the ship
+            camera_transform.look_at(ship.location, Vec3::Y);
+            
+        }
+    }
+    */
+}
+fn update_camera_fpv(
+    query_ship: Query<&Ship>,
+    mut query_camera: Query<&mut Transform, With<FollowCamera>>,
+) {
+    if let Ok(ship) = query_ship.get_single() {
+        if let Ok(mut camera_transform) = query_camera.get_single_mut() {
+            // Camera offset behind and above the ship
+            let offset = Vec3::new(0.0, 0.0, -20.0);
+            let target_position = ship.location + (ship.orientation * offset);
+
+            // Smoothly move the camera to the target position
+            camera_transform.translation = ship.location; //camera_transform.translation.lerp(target_position, 0.2);
+
+            // Make the camera look at the ships forward direction
+            camera_transform.look_at(target_position, Vec3::Y);
+            camera_transform.rotate_local_z(ship.bank);
+
+            
+        }
+    }
+}
+fn update_camera_tpv(
     query_ship: Query<&Ship>,
     mut query_camera: Query<&mut Transform, With<FollowCamera>>,
 ) {
@@ -241,7 +363,7 @@ fn update_camera_follow(
             let target_position = ship.location + (ship.orientation * -offset);
 
             // Smoothly move the camera to the target position
-            camera_transform.translation = camera_transform.translation.lerp(target_position, 0.3);
+            camera_transform.translation = camera_transform.translation.lerp(target_position, 0.2);
             // Make the camera look at the ship
             camera_transform.look_at(ship.location, Vec3::Y);
         }
